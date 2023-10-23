@@ -333,9 +333,9 @@ M: ManageConnection + Send + Sync,
     ///
     /// Unlike `build`, this does not wait for any connections to be established
     /// before returning.
-    pub fn build_unchecked(self, manager: M) -> Pool<M> {
+    pub async fn build_unchecked(self, manager: M) -> Pool<M> {
         let p = self.build_inner(manager);
-        p.inner.spawn_start_connections();
+        p.inner.spawn_start_connections().await;
         p
     }
 }
@@ -451,7 +451,9 @@ M: ManageConnection + Send + Sync,
 <M as ManageConnection>::Connection: Send + Sync
 {
     fn drop(&mut self) {
-        self.pool.as_ref().put_back(self.conn.take());
+        let pool = self.pool.clone().into_owned();
+        let conn = self.conn.take();
+        tokio::spawn(async move { pool.put_back(conn).await });
     }
 }
 

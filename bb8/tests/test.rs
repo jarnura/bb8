@@ -267,7 +267,7 @@ async fn test_lazy_initialization_failure() {
     let manager = NthConnectionFailManager::<FakeConnection>::new(0);
     let pool = Pool::builder()
         .connection_timeout(Duration::from_secs(1))
-        .build_unchecked(manager);
+        .build_unchecked(manager).await;
 
     let res = pool.get().await;
     assert_eq!(res.unwrap_err(), RunError::TimedOut);
@@ -279,7 +279,7 @@ async fn test_lazy_initialization_failure_no_retry() {
     let pool = Pool::builder()
         .connection_timeout(Duration::from_secs(1))
         .retry_connection(false)
-        .build_unchecked(manager);
+        .build_unchecked(manager).await;
 
     let res = pool.get().await;
     assert_eq!(res.unwrap_err(), RunError::User(Error));
@@ -473,7 +473,7 @@ async fn test_min_idle() {
         .await
         .unwrap();
 
-    let state = pool.state();
+    let state = pool.state().await;
     assert_eq!(2, state.idle_connections);
     assert_eq!(2, state.connections);
 
@@ -501,7 +501,7 @@ async fn test_min_idle() {
         .try_collect::<Vec<_>>()
         .await
         .unwrap();
-    let state = pool.state();
+    let state = pool.state().await;
     assert_eq!(2, state.idle_connections);
     assert_eq!(5, state.connections);
 
@@ -514,7 +514,7 @@ async fn test_min_idle() {
         .await
         .is_err());
 
-    let state = pool.state();
+    let state = pool.state().await;
     assert_eq!(5, state.idle_connections);
     assert_eq!(5, state.connections);
 }

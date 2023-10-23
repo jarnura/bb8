@@ -8,12 +8,12 @@ use futures_channel::oneshot;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use futures_util::TryFutureExt;
 use tokio::spawn;
-use tokio::sync::{MutexGuard, OwnedMutexGuard};
+// use tokio::sync::{MutexGuard, OwnedMutexGuard};
 use tokio::time::{interval_at, sleep, timeout, Interval};
 
 // use crate::lock::Mutex;
 use crate::api::{Builder, ManageConnection, PooledConnection, RunError};
-use crate::internals::{Approval, ApprovalIter, Conn, SharedPool, State, PoolInternals};
+use crate::internals::{Approval, ApprovalIter, Conn, SharedPool, State};
 
 pub(crate) struct PoolInner<M>
 where
@@ -53,7 +53,7 @@ where
     }
 
     pub(crate) async fn spawn_start_connections(&self) {
-        let mut locked = self.inner.internals.lock_owned().await.wanted(&self.inner.statics);
+        let locked = self.inner.internals.lock_owned().await.wanted(&self.inner.statics);
         self.spawn_replenishing_approvals(locked);
     }
 
@@ -112,7 +112,7 @@ where
     {
         loop {
             let mut conn = {
-                let mut locked = self.inner.internals.lock();
+                let locked = self.inner.internals.lock();
                 match locked.await.pop(&self.inner.statics) {
                     Some((conn, approvals)) => {
                         self.spawn_replenishing_approvals(approvals);
@@ -129,7 +129,7 @@ where
             match self.inner.manager.is_valid(&mut conn).await {
                 Ok(()) => return Ok(conn),
                 Err(e) => {
-                    self.inner.forward_error(e);
+                    self.inner.forward_error(e).await;
                     conn.drop_invalid();
                     continue;
                 }
@@ -138,7 +138,7 @@ where
 
         let (tx, rx) = oneshot::channel();
         {
-            let mut locked = self.inner.internals.lock();
+            let locked = self.inner.internals.lock();
             let approvals = locked.await.push_waiter(tx, &self.inner.statics);
             self.spawn_replenishing_approvals(approvals);
         };
@@ -166,7 +166,7 @@ where
             }
         });
 
-        let mut locked = self.inner.internals.lock();
+        let locked = self.inner.internals.lock();
         match conn {
             Some(conn) => locked.await.put(conn, None, self.inner.clone()),
             None => {
@@ -182,7 +182,7 @@ where
     }
 
     async fn reap(&self) {
-        let mut internals = self.inner.internals.lock();
+        let internals = self.inner.internals.lock();
         let approvals = internals.await.reap(&self.inner.statics);
         self.spawn_replenishing_approvals(approvals);
     }
@@ -220,7 +220,7 @@ where
                     if !self.inner.statics.retry_connection
                         || Instant::now() - start > self.inner.statics.connection_timeout
                     {
-                        let mut locked = shared.internals.lock();
+                        let locked = shared.internals.lock();
                         locked.await.connect_failed(approval);
                         return Err(e);
                     } else {
@@ -272,7 +272,7 @@ where
         loop {
             let _ = interval.tick().await;
             if let Some(inner) = weak_shared.upgrade() {
-                PoolInner { inner }.reap();
+                PoolInner { inner }.reap().await;
             } else {
                 break;
             }
