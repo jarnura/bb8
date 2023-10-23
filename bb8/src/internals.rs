@@ -12,7 +12,8 @@ use std::collections::VecDeque;
 #[allow(missing_debug_implementations)]
 pub(crate) struct SharedPool<M>
 where
-    M: ManageConnection + Send,
+    M: ManageConnection + Send + Sync,
+    <M as ManageConnection>::Connection: Send + Sync
 {
     pub(crate) statics: Builder<M>,
     pub(crate) manager: M,
@@ -21,7 +22,8 @@ where
 
 impl<M> SharedPool<M>
 where
-    M: ManageConnection + Send,
+    M: ManageConnection + Send + Sync,
+    <M as ManageConnection>::Connection: Send + Sync
 {
     pub(crate) fn new(statics: Builder<M>, manager: M) -> Self {
         Self {
@@ -31,8 +33,8 @@ where
         }
     }
 
-    pub(crate) fn forward_error(&self, mut err: M::Error) {
-        let mut locked = self.internals.lock();
+    pub(crate) async fn forward_error(&self, mut err: M::Error) {
+        let mut locked = self.internals.lock().await;
         while let Some(waiter) = locked.waiters.pop_front() {
             match waiter.send(Err(err)) {
                 Ok(_) => return,
@@ -48,7 +50,8 @@ where
 #[allow(missing_debug_implementations)]
 pub(crate) struct PoolInternals<M>
 where
-    M: ManageConnection,
+    M: ManageConnection + Send + Sync,
+<M as ManageConnection>::Connection: Send + Sync
 {
     waiters: VecDeque<oneshot::Sender<Result<InternalsGuard<M>, M::Error>>>,
     conns: VecDeque<IdleConn<M::Connection>>,
@@ -58,12 +61,14 @@ where
 
 impl<M> PoolInternals<M>
 where
-    M: ManageConnection,
+    M: ManageConnection + Send + Sync,
+    <M as ManageConnection>::Connection: Send + Sync
 {
     pub(crate) fn pop(
         &mut self,
         config: &Builder<M>,
-    ) -> Option<(Conn<M::Connection>, ApprovalIter)> {
+    ) -> Option<(Conn<M::Connection>, ApprovalIter)>
+    {
         self.conns
             .pop_front()
             .map(|idle| (idle.conn, self.wanted(config)))
@@ -173,7 +178,8 @@ where
 
 impl<M> Default for PoolInternals<M>
 where
-    M: ManageConnection,
+    M: ManageConnection + Send + Sync,
+    <M as ManageConnection>::Connection: Send + Sync
 {
     fn default() -> Self {
         Self {
@@ -185,12 +191,20 @@ where
     }
 }
 
-pub(crate) struct InternalsGuard<M: ManageConnection> {
+pub(crate) struct InternalsGuard<M>
+where
+    M: ManageConnection + Send + Sync,
+    <M as ManageConnection>::Connection: Send + Sync
+{
     conn: Option<Conn<M::Connection>>,
     pool: Arc<SharedPool<M>>,
 }
 
-impl<M: ManageConnection> InternalsGuard<M> {
+impl<M> InternalsGuard<M>
+where
+M: ManageConnection + Send + Sync,
+<M as ManageConnection>::Connection: Send + Sync
+{
     fn new(conn: Conn<M::Connection>, pool: Arc<SharedPool<M>>) -> Self {
         Self {
             conn: Some(conn),
@@ -203,17 +217,24 @@ impl<M: ManageConnection> InternalsGuard<M> {
     }
 }
 
-impl<M: ManageConnection> Drop for InternalsGuard<M> {
+impl<M> Drop for InternalsGuard<M>
+where
+M: ManageConnection + Send + Sync,
+<M as ManageConnection>::Connection: Send + Sync
+{
     fn drop(&mut self) {
         if let Some(conn) = self.conn.take() {
-            let mut locked = self.pool.internals.lock();
-            locked.put(conn, None, self.pool.clone());
+            let pool = self.pool.clone();
+            tokio::spawn(async move{
+                let locked = pool.internals.lock_owned();
+                locked.await.put(conn, None, pool.clone()) });
         }
     }
 }
 
 #[must_use]
-pub(crate) struct ApprovalIter {
+pub(crate) struct ApprovalIter
+{
     num: usize,
 }
 
@@ -245,13 +266,13 @@ pub(crate) struct Approval {
 #[derive(Debug)]
 pub(crate) struct Conn<C>
 where
-    C: Send,
+    C: Send + Sync,
 {
     pub(crate) conn: C,
     birth: Instant,
 }
 
-impl<C: Send> Conn<C> {
+impl<C: Send + Sync> Conn<C> {
     pub(crate) fn new(conn: C) -> Self {
         Self {
             conn,
@@ -260,7 +281,7 @@ impl<C: Send> Conn<C> {
     }
 }
 
-impl<C: Send> From<IdleConn<C>> for Conn<C> {
+impl<C: Send + Sync> From<IdleConn<C>> for Conn<C> {
     fn from(conn: IdleConn<C>) -> Self {
         conn.conn
     }
@@ -268,13 +289,13 @@ impl<C: Send> From<IdleConn<C>> for Conn<C> {
 
 struct IdleConn<C>
 where
-    C: Send,
+    C: Send + Sync,
 {
     conn: Conn<C>,
     idle_start: Instant,
 }
 
-impl<C: Send> From<Conn<C>> for IdleConn<C> {
+impl<C: Send + Sync> From<Conn<C>> for IdleConn<C> {
     fn from(conn: Conn<C>) -> Self {
         IdleConn {
             conn,

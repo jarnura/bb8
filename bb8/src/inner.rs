@@ -8,21 +8,25 @@ use futures_channel::oneshot;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use futures_util::TryFutureExt;
 use tokio::spawn;
+use tokio::sync::{MutexGuard, OwnedMutexGuard};
 use tokio::time::{interval_at, sleep, timeout, Interval};
 
+// use crate::lock::Mutex;
 use crate::api::{Builder, ManageConnection, PooledConnection, RunError};
-use crate::internals::{Approval, ApprovalIter, Conn, SharedPool, State};
+use crate::internals::{Approval, ApprovalIter, Conn, SharedPool, State, PoolInternals};
 
 pub(crate) struct PoolInner<M>
 where
-    M: ManageConnection + Send,
+    M: ManageConnection + Send + Sync,
+    <M as ManageConnection>::Connection: Send + Sync
 {
     inner: Arc<SharedPool<M>>,
 }
 
 impl<M> PoolInner<M>
 where
-    M: ManageConnection + Send,
+    M: ManageConnection + Send + Sync,
+    <M as ManageConnection>::Connection: Send + Sync
 {
     pub(crate) fn new(builder: Builder<M>, manager: M) -> Self {
         let inner = Arc::new(SharedPool::new(builder, manager));
@@ -40,7 +44,7 @@ where
     }
 
     pub(crate) async fn start_connections(&self) -> Result<(), M::Error> {
-        let wanted = self.inner.internals.lock().wanted(&self.inner.statics);
+        let wanted = self.inner.internals.lock().await.wanted(&self.inner.statics);
         let mut stream = self.replenish_idle_connections(wanted);
         while let Some(result) = stream.next().await {
             result?;
@@ -48,9 +52,9 @@ where
         Ok(())
     }
 
-    pub(crate) fn spawn_start_connections(&self) {
-        let mut locked = self.inner.internals.lock();
-        self.spawn_replenishing_approvals(locked.wanted(&self.inner.statics));
+    pub(crate) async fn spawn_start_connections(&self) {
+        let mut locked = self.inner.internals.lock_owned().await.wanted(&self.inner.statics);
+        self.spawn_replenishing_approvals(locked);
     }
 
     fn spawn_replenishing_approvals(&self, approvals: ApprovalIter) {
@@ -64,7 +68,7 @@ where
             while let Some(result) = stream.next().await {
                 match result {
                     Ok(()) => {}
-                    Err(e) => this.inner.forward_error(e),
+                    Err(e) => this.inner.forward_error(e).await,
                 }
             }
         });
@@ -109,7 +113,7 @@ where
         loop {
             let mut conn = {
                 let mut locked = self.inner.internals.lock();
-                match locked.pop(&self.inner.statics) {
+                match locked.await.pop(&self.inner.statics) {
                     Some((conn, approvals)) => {
                         self.spawn_replenishing_approvals(approvals);
                         make_pooled_conn(self, conn)
@@ -135,7 +139,7 @@ where
         let (tx, rx) = oneshot::channel();
         {
             let mut locked = self.inner.internals.lock();
-            let approvals = locked.push_waiter(tx, &self.inner.statics);
+            let approvals = locked.await.push_waiter(tx, &self.inner.statics);
             self.spawn_replenishing_approvals(approvals);
         };
 
@@ -153,7 +157,7 @@ where
     }
 
     /// Return connection back in to the pool
-    pub(crate) fn put_back(&self, conn: Option<Conn<M::Connection>>) {
+    pub(crate) async fn put_back(&self, conn: Option<Conn<M::Connection>>) {
         let conn = conn.and_then(|mut conn| {
             if !self.inner.manager.has_broken(&mut conn.conn) {
                 Some(conn)
@@ -164,22 +168,22 @@ where
 
         let mut locked = self.inner.internals.lock();
         match conn {
-            Some(conn) => locked.put(conn, None, self.inner.clone()),
+            Some(conn) => locked.await.put(conn, None, self.inner.clone()),
             None => {
-                let approvals = locked.dropped(1, &self.inner.statics);
+                let approvals = locked.await.dropped(1, &self.inner.statics);
                 self.spawn_replenishing_approvals(approvals);
             }
         }
     }
 
     /// Returns information about the current state of the pool.
-    pub(crate) fn state(&self) -> State {
-        self.inner.internals.lock().state()
+    pub(crate) async fn state(&self) -> State {
+        self.inner.internals.lock().await.state()
     }
 
-    fn reap(&self) {
+    async fn reap(&self) {
         let mut internals = self.inner.internals.lock();
-        let approvals = internals.reap(&self.inner.statics);
+        let approvals = internals.await.reap(&self.inner.statics);
         self.spawn_replenishing_approvals(approvals);
     }
 
@@ -209,7 +213,7 @@ where
                     shared
                         .internals
                         .lock()
-                        .put(conn, Some(approval), self.inner.clone());
+                        .await.put(conn, Some(approval), self.inner.clone());
                     return Ok(());
                 }
                 Err(e) => {
@@ -217,7 +221,7 @@ where
                         || Instant::now() - start > self.inner.statics.connection_timeout
                     {
                         let mut locked = shared.internals.lock();
-                        locked.connect_failed(approval);
+                        locked.await.connect_failed(approval);
                         return Err(e);
                     } else {
                         delay = max(Duration::from_millis(200), delay);
@@ -239,7 +243,8 @@ where
 
 impl<M> Clone for PoolInner<M>
 where
-    M: ManageConnection,
+    M: ManageConnection + Send + Sync,
+    <M as ManageConnection>::Connection: Send + Sync
 {
     fn clone(&self) -> Self {
         PoolInner {
@@ -250,7 +255,8 @@ where
 
 impl<M> fmt::Debug for PoolInner<M>
 where
-    M: ManageConnection,
+    M: ManageConnection + Send + Sync,
+    <M as ManageConnection>::Connection: Send + Sync
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_fmt(format_args!("PoolInner({:p})", self.inner))
@@ -259,7 +265,8 @@ where
 
 fn schedule_reaping<M>(mut interval: Interval, weak_shared: Weak<SharedPool<M>>)
 where
-    M: ManageConnection,
+    M: ManageConnection + Send + Sync,
+    <M as ManageConnection>::Connection: Send + Sync
 {
     spawn(async move {
         loop {

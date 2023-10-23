@@ -14,14 +14,16 @@ pub use crate::internals::State;
 /// A generic connection pool.
 pub struct Pool<M>
 where
-    M: ManageConnection,
+    M: ManageConnection + Send + Sync,
+    <M as ManageConnection>::Connection: Send + Sync
 {
     pub(crate) inner: PoolInner<M>,
 }
 
 impl<M> Clone for Pool<M>
 where
-    M: ManageConnection,
+    M: ManageConnection + Send + Sync,
+    <M as ManageConnection>::Connection: Send + Sync
 {
     fn clone(&self) -> Self {
         Pool {
@@ -32,22 +34,27 @@ where
 
 impl<M> fmt::Debug for Pool<M>
 where
-    M: ManageConnection,
+    M: ManageConnection + Send + Sync,
+    <M as ManageConnection>::Connection: Send + Sync
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_fmt(format_args!("Pool({:?})", self.inner))
     }
 }
 
-impl<M: ManageConnection> Pool<M> {
+impl<M> Pool<M>
+where
+M: ManageConnection + Send + Sync,
+<M as ManageConnection>::Connection: Send + Sync
+{
     /// Returns a `Builder` instance to configure a new pool.
     pub fn builder() -> Builder<M> {
         Builder::new()
     }
 
     /// Returns information about the current state of the pool.
-    pub fn state(&self) -> State {
-        self.inner.state()
+    pub async fn state(&self) -> State {
+        self.inner.state().await
     }
 
     /// Retrieves a connection from the pool.
@@ -135,7 +142,11 @@ impl<M: ManageConnection> Default for Builder<M> {
     }
 }
 
-impl<M: ManageConnection> Builder<M> {
+impl<M> Builder<M>
+where
+M: ManageConnection + Send + Sync,
+<M as ManageConnection>::Connection: Send + Sync
+{
     /// Constructs a new `Builder`.
     ///
     /// Parameters are initialized with their default values.
@@ -362,8 +373,10 @@ pub trait CustomizeConnection<C: Send + 'static, E: 'static>:
 
 /// A smart pointer wrapping a connection.
 pub struct PooledConnection<'a, M>
-where
-    M: ManageConnection,
+
+    where
+M: ManageConnection + Send + Sync,
+<M as ManageConnection>::Connection: Send + Sync
 {
     pool: Cow<'a, PoolInner<M>>,
     conn: Option<Conn<M::Connection>>,
@@ -371,7 +384,8 @@ where
 
 impl<'a, M> PooledConnection<'a, M>
 where
-    M: ManageConnection,
+M: ManageConnection + Send + Sync,
+<M as ManageConnection>::Connection: Send + Sync
 {
     pub(crate) fn new(pool: &'a PoolInner<M>, conn: Conn<M::Connection>) -> Self {
         Self {
@@ -387,7 +401,8 @@ where
 
 impl<M> PooledConnection<'static, M>
 where
-    M: ManageConnection,
+M: ManageConnection + Send + Sync,
+<M as ManageConnection>::Connection: Send + Sync
 {
     pub(crate) fn new_owned(pool: PoolInner<M>, conn: Conn<M::Connection>) -> Self {
         Self {
@@ -399,7 +414,8 @@ where
 
 impl<'a, M> Deref for PooledConnection<'a, M>
 where
-    M: ManageConnection,
+M: ManageConnection + Send + Sync,
+<M as ManageConnection>::Connection: Send + Sync
 {
     type Target = M::Connection;
 
@@ -410,7 +426,8 @@ where
 
 impl<'a, M> DerefMut for PooledConnection<'a, M>
 where
-    M: ManageConnection,
+M: ManageConnection + Send + Sync,
+<M as ManageConnection>::Connection: Send + Sync
 {
     fn deref_mut(&mut self) -> &mut M::Connection {
         &mut self.conn.as_mut().unwrap().conn
@@ -419,7 +436,8 @@ where
 
 impl<'a, M> fmt::Debug for PooledConnection<'a, M>
 where
-    M: ManageConnection,
+M: ManageConnection + Send + Sync,
+<M as ManageConnection>::Connection: Send + Sync,
     M::Connection: fmt::Debug,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
@@ -429,7 +447,8 @@ where
 
 impl<'a, M> Drop for PooledConnection<'a, M>
 where
-    M: ManageConnection,
+M: ManageConnection + Send + Sync,
+<M as ManageConnection>::Connection: Send + Sync
 {
     fn drop(&mut self) {
         self.pool.as_ref().put_back(self.conn.take());

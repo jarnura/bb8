@@ -46,28 +46,47 @@ mod lock {
     use parking_lot::Mutex as MutexImpl;
     #[cfg(feature = "parking_lot")]
     use parking_lot::MutexGuard;
+    use tokio::sync::OwnedMutexGuard;
 
+    use std::sync::Arc;
     #[cfg(not(feature = "parking_lot"))]
+    #[cfg(not(feature = "tokio"))]
     use std::sync::Mutex as MutexImpl;
     #[cfg(not(feature = "parking_lot"))]
+    #[cfg(not(feature = "tokio"))]
     use std::sync::MutexGuard;
 
-    pub(crate) struct Mutex<T>(MutexImpl<T>);
+    #[cfg(feature = "tokio")]
+    use tokio::sync::Mutex as MutexImpl;
+    #[cfg(feature = "tokio")]
+    use tokio::sync::MutexGuard;
+
+    pub(crate) struct Mutex<T>(Arc<MutexImpl<T>>);
 
     impl<T> Mutex<T> {
         pub(crate) fn new(val: T) -> Self {
-            Self(MutexImpl::new(val))
+            Self(Arc::new(MutexImpl::new(val)))
         }
 
-        pub(crate) fn lock(&self) -> MutexGuard<'_, T> {
+        pub(crate) async fn lock(&self) -> MutexGuard<'_, T> {
             #[cfg(feature = "parking_lot")]
             {
                 self.0.lock()
             }
+            #[cfg(not(feature = "tokio"))]
             #[cfg(not(feature = "parking_lot"))]
             {
                 self.0.lock().unwrap()
             }
+
+            #[cfg(feature = "tokio")]
+            {
+                self.0.lock().await
+            }
+        }
+
+        pub(crate) async fn lock_owned(&self) -> OwnedMutexGuard<T> {
+            self.0.clone().lock_owned().await
         }
     }
 }
