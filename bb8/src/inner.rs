@@ -28,6 +28,7 @@ where
     M: ManageConnection + Send + Sync,
     <M as ManageConnection>::Connection: Send + Sync
 {
+    #[tracing::instrument(skip_all)]
     pub(crate) fn new(builder: Builder<M>, manager: M) -> Self {
         let inner = Arc::new(SharedPool::new(builder, manager));
 
@@ -43,6 +44,7 @@ where
         Self { inner }
     }
 
+    #[tracing::instrument(skip_all)]
     pub(crate) async fn start_connections(&self) -> Result<(), M::Error> {
         let wanted = self.inner.internals.lock().await.wanted(&self.inner.statics);
         let mut stream = self.replenish_idle_connections(wanted);
@@ -52,11 +54,13 @@ where
         Ok(())
     }
 
+    #[tracing::instrument(skip_all)]
     pub(crate) async fn spawn_start_connections(&self) {
         let locked = self.inner.internals.lock_owned().await.wanted(&self.inner.statics);
         self.spawn_replenishing_approvals(locked);
     }
 
+    #[tracing::instrument(skip_all)]
     fn spawn_replenishing_approvals(&self, approvals: ApprovalIter) {
         if approvals.len() == 0 {
             return;
@@ -74,6 +78,7 @@ where
         });
     }
 
+    #[tracing::instrument(skip_all)]
     fn replenish_idle_connections(
         &self,
         approvals: ApprovalIter,
@@ -86,11 +91,13 @@ where
         stream
     }
 
+    #[tracing::instrument(skip_all)]
     pub(crate) async fn get(&self) -> Result<PooledConnection<'_, M>, RunError<M::Error>> {
         self.make_pooled(|this, conn| PooledConnection::new(this, conn))
             .await
     }
 
+    #[tracing::instrument(skip_all)]
     pub(crate) async fn get_owned(
         &self,
     ) -> Result<PooledConnection<'static, M>, RunError<M::Error>> {
@@ -103,6 +110,7 @@ where
         .await
     }
 
+    #[tracing::instrument(skip_all)]
     pub(crate) async fn make_pooled<'a, 'b, F>(
         &'a self,
         make_pooled_conn: F,
@@ -150,6 +158,7 @@ where
         }
     }
 
+    #[tracing::instrument(skip_all)]
     pub(crate) async fn connect(&self) -> Result<M::Connection, M::Error> {
         let mut conn = self.inner.manager.connect().await?;
         self.on_acquire_connection(&mut conn).await?;
@@ -157,6 +166,7 @@ where
     }
 
     /// Return connection back in to the pool
+    #[tracing::instrument(skip_all)]
     pub(crate) async fn put_back(&self, conn: Option<Conn<M::Connection>>) {
         let conn = conn.and_then(|mut conn| {
             if !self.inner.manager.has_broken(&mut conn.conn) {
@@ -177,10 +187,12 @@ where
     }
 
     /// Returns information about the current state of the pool.
+    #[tracing::instrument(skip_all)]
     pub(crate) async fn state(&self) -> State {
         self.inner.internals.lock().await.state()
     }
 
+    #[tracing::instrument(skip_all)]
     async fn reap(&self) {
         let internals = self.inner.internals.lock();
         let approvals = internals.await.reap(&self.inner.statics);
@@ -188,6 +200,7 @@ where
     }
 
     // Outside of Pool to avoid borrow splitting issues on self
+    #[tracing::instrument(skip_all)]
     async fn add_connection(&self, approval: Approval) -> Result<(), M::Error>
     where
         M: ManageConnection,
@@ -233,6 +246,7 @@ where
         }
     }
 
+    #[tracing::instrument(skip_all)]
     async fn on_acquire_connection(&self, conn: &mut M::Connection) -> Result<(), M::Error> {
         match self.inner.statics.connection_customizer.as_ref() {
             Some(customizer) => customizer.on_acquire(conn).await,
@@ -263,6 +277,7 @@ where
     }
 }
 
+#[tracing::instrument(skip_all)]
 fn schedule_reaping<M>(mut interval: Interval, weak_shared: Weak<SharedPool<M>>)
 where
     M: ManageConnection + Send + Sync,
